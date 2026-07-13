@@ -147,12 +147,20 @@ create trigger items_sync_gate_closed_at
   for each row execute function sync_gate_closed_at();
 
 -- Bulk-import gate rows from the admin "Gate upload" paste box in one
--- transaction: merges qty into an existing unpacked row with the same
--- sku+barcode, otherwise inserts a new item row. Creating a gate row
--- and inserting an unpacked item both make the sync trigger above
--- re-open a previously-closed gate automatically.
-create or replace function import_gate_rows(p_rows jsonb)
-returns table (imported int, skipped int)
+-- transaction. A row that repeats within THIS SAME paste (a genuine
+-- multi-line order — the same SKU appearing twice in one order export)
+-- has its quantity combined, same as before. But a row that matches an
+-- item already sitting in the database from an EARLIER call is left
+-- untouched rather than having its quantity added to — auto-adding was
+-- the old behavior, and it silently doubled real quantities whenever an
+-- admin re-pasted the same (or an overlapping) batch after a failed or
+-- retried import. Creating a gate row and inserting an unpacked item
+-- both make the sync trigger above re-open a previously-closed gate
+-- automatically.
+drop function if exists import_gate_rows(jsonb);
+
+create function import_gate_rows(p_rows jsonb)
+returns table (imported int, skipped int, already_existed int)
 language plpgsql security definer set search_path = public as $$
 declare
   v_row jsonb;
@@ -163,8 +171,15 @@ declare
   v_image text;
   v_barcode text;
   v_imported int := 0;
+  v_already int := 0;
   v_existing_id uuid;
+  v_seen_id uuid;
 begin
+  create temporary table if not exists _import_seen (
+    tracking text, sku text, barcode text, item_id uuid
+  ) on commit drop;
+  delete from _import_seen;
+
   for v_row in select * from jsonb_array_elements(p_rows) loop
     v_tracking := trim(coalesce(v_row->>'tracking', ''));
     if v_tracking = '' then continue; end if;
@@ -178,22 +193,36 @@ begin
     insert into gates (tracking) values (v_tracking)
       on conflict (tracking) do nothing;
 
+    select item_id into v_seen_id from _import_seen
+      where tracking = v_tracking and sku = v_sku and barcode = v_barcode
+      limit 1;
+
+    if v_seen_id is not null then
+      update items set qty = qty + v_qty where id = v_seen_id;
+      v_imported := v_imported + 1;
+      continue;
+    end if;
+
     select id into v_existing_id from items
       where gate_tracking = v_tracking and sku = v_sku and barcode = v_barcode
         and packed_at is null
       limit 1;
 
     if v_existing_id is not null then
-      update items set qty = qty + v_qty where id = v_existing_id;
-    else
-      insert into items (gate_tracking, sku, name, qty, image, barcode)
-        values (v_tracking, v_sku, v_name, v_qty, v_image, v_barcode);
+      v_already := v_already + 1;
+      insert into _import_seen values (v_tracking, v_sku, v_barcode, v_existing_id);
+      continue;
     end if;
+
+    insert into items (gate_tracking, sku, name, qty, image, barcode)
+      values (v_tracking, v_sku, v_name, v_qty, v_image, v_barcode)
+      returning id into v_existing_id;
+    insert into _import_seen values (v_tracking, v_sku, v_barcode, v_existing_id);
 
     v_imported := v_imported + 1;
   end loop;
 
-  return query select v_imported, jsonb_array_length(p_rows) - v_imported;
+  return query select v_imported, jsonb_array_length(p_rows) - v_imported - v_already, v_already;
 end;
 $$;
 

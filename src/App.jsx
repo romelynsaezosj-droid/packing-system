@@ -515,6 +515,7 @@ function GateUpload() {
 
     let importedRows = 0;
     let mergedSkipped = 0;
+    let alreadyExisted = 0;
 
     for (let offset = 0; offset < rows.length; offset += CHUNK) {
       const chunk = rows.slice(offset, offset + CHUNK);
@@ -529,7 +530,7 @@ function GateUpload() {
           text:
             `Import failed after ${importedRows} of ${rows.length} rows ` +
             `(${error.message || "unknown error"}). The first ${importedRows} rows were saved — ` +
-            `re-paste only the remaining rows to finish, or you'll double-count quantities.`,
+            `it's safe to re-paste the whole list again to finish, rows already saved won't be double-counted.`,
         });
         return;
       }
@@ -537,6 +538,7 @@ function GateUpload() {
       const result = data?.[0] || {};
       importedRows += result.imported ?? chunk.length;
       mergedSkipped += result.skipped ?? 0;
+      alreadyExisted += result.already_existed ?? 0;
     }
 
     setSubmitting(false);
@@ -546,6 +548,10 @@ function GateUpload() {
       type: "success",
       text: `Imported ${importedRows} row${importedRows === 1 ? "" : "s"}.${
         totalSkipped ? ` Skipped ${totalSkipped} malformed row${totalSkipped === 1 ? "" : "s"}.` : ""
+      }${
+        alreadyExisted
+          ? ` ${alreadyExisted} row${alreadyExisted === 1 ? "" : "s"} matched an item already in the system and were left unchanged (not re-added or double-counted).`
+          : ""
       }`,
     });
 
