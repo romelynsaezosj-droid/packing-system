@@ -199,6 +199,57 @@ $$;
 
 grant execute on function import_gate_rows(jsonb) to anon;
 
+-- PACKER PRODUCTIVITY -------------------------------------------------
+-- Per-packer stats for the Productivity dashboard, aggregated in the
+-- database (a 15k-order day is far too many rows to count client-side).
+-- Each gate packed in the window is classified by what was packed:
+--   single           = 1 line with qty 1
+--   single_multi_qty = 1 line with qty > 1
+--   multi            = more than 1 line
+-- A gate is attributed to whoever packed its most recent item (in
+-- practice one packer packs a whole parcel, so this only matters in
+-- rare hand-off cases).
+
+create or replace function packer_stats(p_start timestamptz, p_end timestamptz)
+returns table (
+  packer text,
+  total_gates bigint,
+  single_gates bigint,
+  single_multi_qty bigint,
+  multi_gates bigint,
+  total_lines bigint,
+  total_qty bigint
+)
+language sql security definer set search_path = public as $$
+  with packed as (
+    select gate_tracking, coalesce(packed_by, 'unknown') as packed_by, qty, packed_at
+    from items
+    where packed_at >= p_start and packed_at < p_end
+  ),
+  gate_rollup as (
+    select
+      gate_tracking,
+      count(*) as lines,
+      sum(qty) as gate_qty,
+      (array_agg(packed_by order by packed_at desc))[1] as gate_packer
+    from packed
+    group by gate_tracking
+  )
+  select
+    gate_packer as packer,
+    count(*) as total_gates,
+    count(*) filter (where lines = 1 and gate_qty = 1) as single_gates,
+    count(*) filter (where lines = 1 and gate_qty > 1) as single_multi_qty,
+    count(*) filter (where lines > 1) as multi_gates,
+    sum(lines) as total_lines,
+    sum(gate_qty) as total_qty
+  from gate_rollup
+  group by gate_packer
+  order by total_gates desc;
+$$;
+
+grant execute on function packer_stats(timestamptz, timestamptz) to anon;
+
 -- REALTIME ----------------------------------------------------------------
 -- Lets a gate uploaded on the web admin appear instantly on a packer's
 -- device, and a packer's confirm reflect back on the admin dashboard.

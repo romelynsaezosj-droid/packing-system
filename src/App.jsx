@@ -157,6 +157,7 @@ export default function PackingSystem() {
       onLogout={() => setSession(null)}
     >
       {view === "dash" && isAdmin && <Dashboard />}
+      {view === "prod" && isAdmin && <Productivity />}
       {view === "upload" && isAdmin && <GateUpload />}
       {view === "scan" && <PackingMode currentUser={session.username} />}
       {view === "logs" && isAdmin && <Logs />}
@@ -243,6 +244,7 @@ function Shell({ session, isAdmin, view, setView, onLogout, children }) {
   const navItems = isAdmin
     ? [
         { id: "dash", label: "Dashboard", icon: "▦" },
+        { id: "prod", label: "Productivity", icon: "▲" },
         { id: "upload", label: "Gate upload", icon: "⇪" },
         { id: "scan", label: "Packing", icon: "▣" },
         { id: "logs", label: "Logs", icon: "≡" },
@@ -303,7 +305,7 @@ function Dashboard() {
         Today's activity — resets each day
       </p>
       <div className="stats-grid">
-        <Stat label="Total gates" value={stats.total} />
+        <Stat label="Total orders" value={stats.total} />
         <Stat label="Completed" value={stats.completed} />
         <Stat label="Pending" value={pending} />
         <Stat label="Log entries" value={stats.packed} />
@@ -329,6 +331,130 @@ function Stat({ label, value }) {
     <div className="stat-card">
       <p className="stat-label">{label}</p>
       <p className="stat-value">{value}</p>
+    </div>
+  );
+}
+
+/* ---------------- PRODUCTIVITY (admin only) ---------------- */
+
+function localDateToRange(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 1);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+function todayLocalDateStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function Productivity() {
+  const [date, setDate] = useState(todayLocalDateStr);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const { start, end } = localDateToRange(date);
+      const { data, error: rpcError } = await supabase.rpc("packer_stats", {
+        p_start: start,
+        p_end: end,
+      });
+      if (cancelled) return;
+      if (rpcError) {
+        setError(
+          rpcError.message?.includes("packer_stats")
+            ? "The packer_stats function isn't installed yet — run the updated supabase/schema.sql in the Supabase SQL Editor."
+            : `Couldn't load stats: ${rpcError.message}`
+        );
+        setRows([]);
+      } else {
+        setError(null);
+        setRows(data || []);
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
+
+  const maxGates = rows.length ? Number(rows[0].total_gates) : 0;
+  const topPackers = rows.slice(0, 10);
+
+  return (
+    <div>
+      <p className="title">Productivity</p>
+
+      <div className="card" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <span className="muted">Day</span>
+        <input
+          type="date"
+          style={{ flex: "0 1 170px", margin: 0 }}
+          value={date}
+          onChange={(e) => e.target.value && setDate(e.target.value)}
+        />
+      </div>
+
+      {loading && <div className="card"><p className="muted">Loading…</p></div>}
+      {!loading && error && <div className="card"><p className="error-text" style={{ margin: 0 }}>{error}</p></div>}
+      {!loading && !error && rows.length === 0 && (
+        <div className="card"><p className="muted">Nothing packed on this day yet.</p></div>
+      )}
+
+      {!loading && !error && rows.length > 0 && (
+        <>
+          <div className="card">
+            <p style={{ margin: "0 0 12px", fontWeight: 600 }}>Top packers — orders packed</p>
+            {topPackers.map((r) => (
+              <div key={r.packer} className="prod-bar-row" title={`${r.packer}: ${r.total_gates} orders`}>
+                <span className="prod-bar-name">{r.packer}</span>
+                <div className="prod-bar-track">
+                  <div
+                    className="prod-bar-fill"
+                    style={{ width: `${maxGates ? (Number(r.total_gates) / maxGates) * 100 : 0}%` }}
+                  />
+                </div>
+                <span className="prod-bar-value">{r.total_gates}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="card" style={{ overflowX: "auto" }}>
+            <table className="prod-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Total pack</th>
+                  <th>Single</th>
+                  <th>Single multi-qty</th>
+                  <th>Multiple</th>
+                  <th>Total qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.packer}>
+                    <td style={{ fontWeight: 600 }}>{r.packer}</td>
+                    <td>{r.total_gates}</td>
+                    <td>{r.single_gates}</td>
+                    <td>{r.single_multi_qty}</td>
+                    <td>{r.multi_gates}</td>
+                    <td>{r.total_qty}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="muted" style={{ margin: "10px 0 0" }}>
+              Single = 1 line, qty 1 · Single multi-qty = 1 line, qty over 1 · Multiple = more than 1 line
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1287,6 +1413,21 @@ button {
 }
 .stat-label { font-size: 12px; color: #64748b; margin: 0; }
 .stat-value { font-size: 24px; color: #2563eb; margin: 6px 0 0; font-weight: 700; }
+.prod-bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.prod-bar-name {
+  flex: 0 0 110px; font-size: 13px; color: #0f172a; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+}
+.prod-bar-track { flex: 1; background: #f1f5f9; border-radius: 4px; height: 18px; overflow: hidden; }
+.prod-bar-fill { height: 100%; background: #2563eb; border-radius: 0 4px 4px 0; min-width: 2px; }
+.prod-bar-value { flex: 0 0 48px; font-size: 13px; color: #0f172a; font-weight: 600; }
+.prod-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.prod-table th {
+  text-align: left; font-size: 12px; color: #64748b; font-weight: 500;
+  padding: 8px 12px 8px 0; border-bottom: 1px solid #e2e8f0; white-space: nowrap;
+}
+.prod-table td { padding: 8px 12px 8px 0; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
+.prod-table tr:last-child td { border-bottom: none; }
 .item-row { display: flex; gap: 12px; align-items: center; }
 .item-row img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex-shrink: 0; border: 1px solid #e2e8f0; }
 .item-img-fallback {
