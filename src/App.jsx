@@ -55,35 +55,49 @@ function useAccounts() {
   return { accounts, loading, refresh };
 }
 
-// Fetches gates + items and derives the shapes the rest of the app
-// already expects: a `gates` map of tracking -> { tracking, closedAt,
-// items: [unpacked items] }, and a `logs` array of packed items. Items
-// double as logs (packed_at/packed_by set = both packed and logged in
-// one row), so the two can never drift apart the way two separate
-// tables/state updates once did.
-function useGatesAndLogs() {
-  const [gateRows, setGateRows] = useState([]);
-  const [itemRows, setItemRows] = useState([]);
+// Start of the local calendar day, as an ISO string for timestamptz
+// comparisons in Supabase queries.
+function todayStartIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+// Today's dashboard numbers via count-only queries (head: true returns
+// no rows, just the count). The tables hold thousands of rows per day
+// and Supabase caps plain selects at 1000 rows anyway — the app must
+// never assume it can download the whole warehouse into the browser.
+function useTodayStats() {
+  const [stats, setStats] = useState({ total: 0, completed: 0, packed: 0 });
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const [{ data: g }, { data: i }] = await Promise.all([
-      supabase.from("gates").select("*"),
-      supabase.from("items").select("*"),
+    const since = todayStartIso();
+    const [totalRes, completedRes, packedRes] = await Promise.all([
+      supabase.from("gates").select("*", { count: "exact", head: true }).gte("created_at", since),
+      supabase
+        .from("gates")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", since)
+        .not("closed_at", "is", null),
+      supabase.from("items").select("*", { count: "exact", head: true }).gte("packed_at", since),
     ]);
-    setGateRows(g || []);
-    setItemRows(i || []);
+    setStats({
+      total: totalRes.count ?? 0,
+      completed: completedRes.count ?? 0,
+      packed: packedRes.count ?? 0,
+    });
     setLoading(false);
   }, []);
 
   useEffect(() => {
     refresh();
 
-    // Realtime keeps every device in sync: a gate uploaded on the web
-    // admin shows up on a packer's phone, and a packer's confirm shows
-    // up on the admin dashboard, without anyone refreshing the page.
+    // Realtime keeps the dashboard live: a packer's confirm anywhere
+    // bumps these counts without a manual refresh. Count queries are
+    // cheap, so refreshing on every change is fine.
     const channel = supabase
-      .channel("gates-items-sync")
+      .channel("dashboard-stats")
       .on("postgres_changes", { event: "*", schema: "public", table: "gates" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, refresh)
       .subscribe();
@@ -91,49 +105,7 @@ function useGatesAndLogs() {
     return () => supabase.removeChannel(channel);
   }, [refresh]);
 
-  const gates = useMemo(() => {
-    const map = {};
-    for (const g of gateRows) {
-      map[g.tracking] = {
-        tracking: g.tracking,
-        closedAt: g.closed_at,
-        createdAt: g.created_at,
-        items: [],
-      };
-    }
-    for (const it of itemRows) {
-      if (it.packed_at) continue;
-      const bucket = map[it.gate_tracking];
-      if (bucket) {
-        bucket.items.push({
-          id: it.id,
-          sku: it.sku,
-          name: it.name,
-          qty: it.qty,
-          image: it.image,
-          barcode: it.barcode,
-        });
-      }
-    }
-    return map;
-  }, [gateRows, itemRows]);
-
-  const logs = useMemo(() => {
-    return itemRows
-      .filter((it) => it.packed_at)
-      .sort((a, b) => new Date(a.packed_at) - new Date(b.packed_at))
-      .map((it) => ({
-        id: it.id,
-        gate: it.gate_tracking,
-        item: it.name,
-        sku: it.sku,
-        user: it.packed_by,
-        packedAt: it.packed_at,
-        time: new Date(it.packed_at).toLocaleString(),
-      }));
-  }, [itemRows]);
-
-  return { gates, logs, loading, refresh };
+  return { stats, loading };
 }
 
 export default function PackingSystem() {
@@ -143,7 +115,6 @@ export default function PackingSystem() {
   );
 
   const { accounts, refresh: refreshAccounts } = useAccounts();
-  const { gates, logs, loading: dataLoading, refresh: refreshData } = useGatesAndLogs();
 
   const isAdmin = session?.role === "admin";
 
@@ -184,12 +155,10 @@ export default function PackingSystem() {
       setView={setView}
       onLogout={() => setSession(null)}
     >
-      {view === "dash" && isAdmin && <Dashboard gates={gates} logs={logs} loading={dataLoading} />}
+      {view === "dash" && isAdmin && <Dashboard />}
       {view === "upload" && isAdmin && <GateUpload />}
-      {view === "scan" && (
-        <PackingMode gates={gates} currentUser={session.username} refreshData={refreshData} />
-      )}
-      {view === "logs" && isAdmin && <Logs logs={logs} />}
+      {view === "scan" && <PackingMode currentUser={session.username} />}
+      {view === "logs" && isAdmin && <Logs />}
       {view === "accounts" && isAdmin && (
         <Accounts
           accounts={accounts}
@@ -317,28 +286,14 @@ function Shell({ session, isAdmin, view, setView, onLogout, children }) {
 
 /* ---------------- DASHBOARD ---------------- */
 
-function isToday(dateString) {
-  if (!dateString) return false;
-  const d = new Date(dateString);
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
-}
-
-function Dashboard({ gates, logs, loading }) {
+function Dashboard() {
   // Scoped to today only, so the dashboard resets each day instead of
   // accumulating forever. A gate keeps its original creation date even
   // if the same tracking number gets re-uploaded later (gates.tracking
   // is unique — re-importing merges into the existing row rather than
   // creating a new one), so re-uploading never inflates today's count.
-  const gateList = Object.values(gates).filter((g) => isToday(g.createdAt));
-  const total = gateList.length;
-  const completed = gateList.filter((g) => g.closedAt).length;
-  const pending = total - completed;
-  const todaysLogs = logs.filter((l) => isToday(l.packedAt));
+  const { stats, loading } = useTodayStats();
+  const pending = stats.total - stats.completed;
 
   return (
     <div>
@@ -347,10 +302,10 @@ function Dashboard({ gates, logs, loading }) {
         Today's activity — resets each day
       </p>
       <div className="stats-grid">
-        <Stat label="Total gates" value={total} />
-        <Stat label="Completed" value={completed} />
+        <Stat label="Total gates" value={stats.total} />
+        <Stat label="Completed" value={stats.completed} />
         <Stat label="Pending" value={pending} />
-        <Stat label="Log entries" value={todaysLogs.length} />
+        <Stat label="Log entries" value={stats.packed} />
       </div>
 
       {loading && (
@@ -359,7 +314,7 @@ function Dashboard({ gates, logs, loading }) {
         </div>
       )}
 
-      {!loading && total === 0 && (
+      {!loading && stats.total === 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <p className="muted">No gates uploaded today yet.</p>
         </div>
@@ -424,19 +379,42 @@ function GateUpload() {
       return;
     }
 
+    // Send in chunks: a single RPC call with thousands of rows can hit
+    // the database's statement timeout, and each RPC is transactional —
+    // so chunking means a failure partway loses only that chunk, and we
+    // can tell the admin exactly which rows still need re-pasting.
+    const CHUNK = 500;
     setSubmitting(true);
-    const { data, error } = await supabase.rpc("import_gate_rows", { p_rows: rows });
-    setSubmitting(false);
 
-    if (error) {
-      setMessage({ type: "error", text: `Import failed: ${error.message || "unknown error"}` });
-      return;
+    let importedRows = 0;
+    let mergedSkipped = 0;
+
+    for (let offset = 0; offset < rows.length; offset += CHUNK) {
+      const chunk = rows.slice(offset, offset + CHUNK);
+      setMessage({ type: "success", text: `Importing… ${offset}/${rows.length}` });
+
+      const { data, error } = await supabase.rpc("import_gate_rows", { p_rows: chunk });
+
+      if (error) {
+        setSubmitting(false);
+        setMessage({
+          type: "error",
+          text:
+            `Import failed after ${importedRows} of ${rows.length} rows ` +
+            `(${error.message || "unknown error"}). The first ${importedRows} rows were saved — ` +
+            `re-paste only the remaining rows to finish, or you'll double-count quantities.`,
+        });
+        return;
+      }
+
+      const result = data?.[0] || {};
+      importedRows += result.imported ?? chunk.length;
+      mergedSkipped += result.skipped ?? 0;
     }
 
-    const result = data?.[0] || {};
-    const importedRows = result.imported ?? rows.length;
-    const totalSkipped = skippedRows + (result.skipped ?? 0);
+    setSubmitting(false);
 
+    const totalSkipped = skippedRows + mergedSkipped;
     setMessage({
       type: "success",
       text: `Imported ${importedRows} row${importedRows === 1 ? "" : "s"}.${
@@ -475,43 +453,78 @@ function GateUpload() {
 
 /* ---------------- PACKING MODE (everyone) ---------------- */
 
-function PackingMode({ gates, currentUser, refreshData }) {
+function PackingMode({ currentUser }) {
   const [track, setTrack] = useState("");
-  const [activeGate, setActiveGate] = useState(null); // tracking number currently loaded
+  const [gate, setGate] = useState(null); // { tracking, closedAt, items } — fetched on demand
   const [statusMsg, setStatusMsg] = useState(null); // { type: 'error'|'info', text }
+  const [loadingGate, setLoadingGate] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
 
-  const gate = activeGate ? gates[activeGate] : null;
+  // Fetch just this gate's unpacked items. The warehouse holds far more
+  // gates than Supabase's 1000-row select cap (and than a phone should
+  // download), so gates are looked up individually by tracking number
+  // rather than kept in one big in-memory map.
+  async function fetchGateItems(tracking) {
+    const { data, error } = await supabase
+      .from("items")
+      .select("*")
+      .eq("gate_tracking", tracking)
+      .is("packed_at", null)
+      .order("created_at");
+    if (error) throw error;
+    return (data || []).map((it) => ({
+      id: it.id,
+      sku: it.sku,
+      name: it.name,
+      qty: it.qty,
+      image: it.image,
+      barcode: it.barcode,
+    }));
+  }
 
-  function tryLoadGate(rawValue) {
+  async function tryLoadGate(rawValue) {
     const t = (rawValue ?? track).trim();
-    if (!t) return;
+    if (!t || loadingGate) return;
 
-    const g = gates[t];
+    setLoadingGate(true);
+    try {
+      const { data: g, error } = await supabase
+        .from("gates")
+        .select("*")
+        .eq("tracking", t)
+        .maybeSingle();
+      if (error) throw error;
 
-    if (!g) {
-      setStatusMsg({ type: "error", text: `No gate found for waybill "${t}".` });
-      setActiveGate(null);
-      return;
+      if (!g) {
+        setStatusMsg({ type: "error", text: `No gate found for waybill "${t}".` });
+        setGate(null);
+        return;
+      }
+
+      if (g.closed_at) {
+        setStatusMsg({
+          type: "error",
+          text: `Waybill "${t}" was already packed and confirmed on ${new Date(g.closed_at).toLocaleString()}. Duplicate scans aren't allowed.`,
+        });
+        setGate(null);
+        return;
+      }
+
+      const items = await fetchGateItems(t);
+      setStatusMsg(null);
+      setGate({ tracking: t, closedAt: g.closed_at, items });
+      setTrack(t);
+    } catch {
+      setStatusMsg({ type: "error", text: "Couldn't load that gate — check your connection and try again." });
+      setGate(null);
+    } finally {
+      setLoadingGate(false);
     }
-
-    if (g.closedAt) {
-      setStatusMsg({
-        type: "error",
-        text: `Waybill "${t}" was already packed and confirmed on ${new Date(g.closedAt).toLocaleString()}. Duplicate scans aren't allowed.`,
-      });
-      setActiveGate(null);
-      return;
-    }
-
-    setStatusMsg(null);
-    setActiveGate(t);
-    setTrack(t);
   }
 
   async function confirmItem(itemId) {
-    if (!activeGate) return;
+    if (!gate) return;
 
     // `.is("packed_at", null)` guards against confirming the same item
     // twice under a race (e.g. a double click, or two devices touching
@@ -527,7 +540,16 @@ function PackingMode({ gates, currentUser, refreshData }) {
       return;
     }
 
-    refreshData();
+    // Refetch from the server rather than filtering locally, so a
+    // concurrent change from another device is reflected too.
+    try {
+      const items = await fetchGateItems(gate.tracking);
+      setGate((prev) => (prev ? { ...prev, items } : prev));
+    } catch {
+      setGate((prev) =>
+        prev ? { ...prev, items: prev.items.filter((i) => i.id !== itemId) } : prev
+      );
+    }
   }
 
   return (
@@ -542,7 +564,9 @@ function PackingMode({ gates, currentUser, refreshData }) {
           placeholder="Enter or scan waybill / tracking number"
         />
         <div className="load-gate-actions">
-          <button className="btn-primary" style={{ flex: 1 }} onClick={() => tryLoadGate()}>Load gate</button>
+          <button className="btn-primary" style={{ flex: 1 }} onClick={() => tryLoadGate()} disabled={loadingGate}>
+            {loadingGate ? "Loading…" : "Load gate"}
+          </button>
           <button className="btn-ghost" style={{ flex: 1 }} onClick={() => setScannerOpen(true)}>
             📷 Scan
           </button>
@@ -704,41 +728,105 @@ function csvEscape(value) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function localDateKey(dateString) {
-  const d = new Date(dateString);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+const LOGS_PAGE_SIZE = 300;
 
-function Logs({ logs }) {
+function Logs() {
   const [search, setSearch] = useState("");
   const [dateFilter, setDateFilter] = useState("");
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return [...logs]
-      .reverse()
-      .filter((l) => {
-        if (dateFilter && localDateKey(l.packedAt) !== dateFilter) return false;
-        if (q) {
-          const haystack = `${l.gate} ${l.item} ${l.sku} ${l.user}`.toLowerCase();
-          if (!haystack.includes(q)) return false;
-        }
-        return true;
-      });
-  }, [logs, search, dateFilter]);
+  // Filters run in the database, not the browser: with thousands of
+  // packed items per day (and Supabase's 1000-row select cap), the
+  // full log history can't be downloaded wholesale.
+  const buildQuery = useCallback(() => {
+    let q = supabase
+      .from("items")
+      .select("*")
+      .not("packed_at", "is", null)
+      .order("packed_at", { ascending: false });
 
-  function exportCsv() {
-    const header = ["Gate", "Item", "SKU", "User", "Time"];
-    const rows = filtered.map((l) => [l.gate, l.item, l.sku, l.user, l.time]);
-    const csv = [header, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `packing-logs-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (dateFilter) {
+      const [y, m, d] = dateFilter.split("-").map(Number);
+      const start = new Date(y, m - 1, d);
+      const end = new Date(y, m - 1, d + 1);
+      q = q.gte("packed_at", start.toISOString()).lt("packed_at", end.toISOString());
+    }
+
+    const term = search.trim().replace(/[,()]/g, "");
+    if (term) {
+      q = q.or(
+        `gate_tracking.ilike.%${term}%,name.ilike.%${term}%,sku.ilike.%${term}%,packed_by.ilike.%${term}%`
+      );
+    }
+
+    return q;
+  }, [search, dateFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    // Small debounce so typing in the search box doesn't fire a query
+    // per keystroke.
+    const timer = setTimeout(async () => {
+      const { data } = await buildQuery().limit(LOGS_PAGE_SIZE);
+      if (!cancelled) {
+        setRows(data || []);
+        setLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [buildQuery]);
+
+  const filtered = rows.map((it) => ({
+    id: it.id,
+    gate: it.gate_tracking,
+    item: it.name,
+    sku: it.sku,
+    user: it.packed_by,
+    time: new Date(it.packed_at).toLocaleString(),
+  }));
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      // Page through everything matching the current filters — the
+      // on-screen list is capped, but the export must be complete.
+      const all = [];
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await buildQuery().range(from, from + PAGE - 1);
+        if (error) throw error;
+        all.push(...(data || []));
+        if (!data || data.length < PAGE) break;
+      }
+
+      const header = ["Gate", "Item", "SKU", "User", "Time"];
+      const csvRows = all.map((it) => [
+        it.gate_tracking,
+        it.name,
+        it.sku,
+        it.packed_by,
+        new Date(it.packed_at).toLocaleString(),
+      ]);
+      const csv = [header, ...csvRows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `packing-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // leave the current view untouched; the button re-enables
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -762,8 +850,8 @@ function Logs({ logs }) {
         {dateFilter && (
           <button className="btn-ghost" onClick={() => setDateFilter("")}>Clear date</button>
         )}
-        <button className="btn-primary" onClick={exportCsv} disabled={filtered.length === 0}>
-          Export CSV
+        <button className="btn-primary" onClick={exportCsv} disabled={exporting || filtered.length === 0}>
+          {exporting ? "Exporting…" : "Export CSV"}
         </button>
       </div>
 
@@ -777,8 +865,19 @@ function Logs({ logs }) {
         />
       )}
 
-      {filtered.length === 0 && (
+      {loading && (
+        <div className="card"><p className="muted">Loading…</p></div>
+      )}
+      {!loading && filtered.length === 0 && (
         <div className="card"><p className="muted">No matching log entries.</p></div>
+      )}
+      {!loading && rows.length === LOGS_PAGE_SIZE && (
+        <div className="card">
+          <p className="muted" style={{ margin: 0 }}>
+            Showing the latest {LOGS_PAGE_SIZE} matching entries. Narrow the search or date
+            filter, or use Export CSV to get the complete list.
+          </p>
+        </div>
       )}
       {filtered.map((l) => (
         <div key={l.id} className="card" style={{ display: "flex", justifyContent: "space-between" }}>
