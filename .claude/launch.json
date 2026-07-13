@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "packing-system",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "autoPort": true
+    },
+    {
+      "name": "video-pack-prototype",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-l", "5182", "."],
+      "port": 5182
+    }
+  ]
+}

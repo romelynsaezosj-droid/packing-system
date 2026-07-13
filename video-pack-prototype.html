@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Video Pack Prototype</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    background: #f8fafc;
+    color: #0f172a;
+    font-family: Arial, sans-serif;
+    min-height: 100vh;
+  }
+  .screen { display: none; min-height: 100vh; flex-direction: column; }
+  .screen.active { display: flex; }
+
+  header {
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid #e2e8f0;
+    background: #ffffff;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+  .logo { width: 26px; height: 26px; border-radius: 8px; background: #0ea5e9; flex-shrink: 0; }
+  header strong { font-size: 15px; }
+  header .step-label { margin-left: auto; font-size: 12px; color: #64748b; }
+
+  main { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+  .card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+  }
+  .title { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+  .muted { font-size: 13px; color: #64748b; margin: 0; }
+
+  input {
+    width: 100%;
+    padding: 12px;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    color: #0f172a;
+    border-radius: 8px;
+    font-size: 15px;
+  }
+  button {
+    padding: 14px 18px;
+    border: none;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 15px;
+    cursor: pointer;
+    min-height: 48px;
+  }
+  .btn-primary { background: #0ea5e9; color: #ffffff; width: 100%; }
+  .btn-primary:active { background: #0284c7; }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-ghost {
+    background: #ffffff;
+    color: #0f172a;
+    border: 1px solid #cbd5e1;
+    width: 100%;
+  }
+  .btn-danger { background: #ef4444; color: #ffffff; width: 100%; }
+  .btn-row { display: flex; gap: 10px; }
+  .btn-row button { flex: 1; }
+
+  .camera-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .camera-frame video { width: 100%; height: 100%; object-fit: cover; }
+  .reticle {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 78%; height: 30%;
+    transform: translate(-50%, -50%);
+    border: 2px solid #0ea5e9;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1500px rgba(0,0,0,0.35);
+  }
+  .rec-badge {
+    position: absolute;
+    top: 12px; left: 12px;
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(0,0,0,0.55);
+    color: #ffffff;
+    padding: 6px 10px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .rec-dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #ef4444;
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .timer {
+    position: absolute;
+    top: 12px; right: 12px;
+    background: rgba(0,0,0,0.55);
+    color: #ffffff;
+    padding: 6px 10px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .error-text { color: #dc2626; font-size: 13px; margin: 8px 0 0; }
+  .success-text { color: #16a34a; font-size: 13px; margin: 8px 0 0; }
+
+  .item-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #e2e8f0; }
+  .item-row:last-child { border-bottom: none; }
+  .item-img { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; background: #e2e8f0; flex-shrink: 0; }
+  .item-info p { margin: 0; }
+  .item-name { font-weight: 600; font-size: 14px; }
+  .item-sub { font-size: 12px; color: #64748b; margin-top: 2px !important; }
+
+  .video-preview { width: 100%; border-radius: 12px; background: #000; }
+
+  .stepper { display: flex; gap: 6px; padding: 0 16px 10px; }
+  .stepper .dot { flex: 1; height: 4px; border-radius: 2px; background: #e2e8f0; }
+  .stepper .dot.done { background: #0ea5e9; }
+
+  .hint-box {
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 12px;
+    color: #64748b;
+  }
+</style>
+</head>
+<body>
+
+<!-- SCREEN 1: SCAN WAYBILL -->
+<div class="screen active" id="screen-scan">
+  <header>
+    <div class="logo"></div>
+    <strong>Video Pack</strong>
+    <span class="step-label">Step 1 of 3</span>
+  </header>
+  <div class="stepper">
+    <div class="dot done"></div><div class="dot"></div><div class="dot"></div>
+  </div>
+  <main>
+    <div class="card">
+      <p class="title">Scan waybill</p>
+      <p class="muted">Point the camera at the waybill barcode, or type it in below.</p>
+    </div>
+
+    <div class="camera-frame">
+      <video id="scan-video" muted playsInline></video>
+      <div class="reticle"></div>
+    </div>
+
+    <input id="waybill-input" placeholder="e.g. GATE001" autocomplete="off" />
+    <div id="scan-error" class="error-text"></div>
+    <button class="btn-primary" id="btn-load-order">Load order</button>
+
+    <div class="hint-box">
+      Demo waybills: <strong>GATE001</strong>, <strong>GATE002</strong>
+    </div>
+  </main>
+</div>
+
+<!-- SCREEN 2: ORDER DETAILS -->
+<div class="screen" id="screen-order">
+  <header>
+    <div class="logo"></div>
+    <strong>Video Pack</strong>
+    <span class="step-label">Step 2 of 3</span>
+  </header>
+  <div class="stepper">
+    <div class="dot done"></div><div class="dot done"></div><div class="dot"></div>
+  </div>
+  <main>
+    <div class="card">
+      <p class="title" id="order-title">Order</p>
+      <p class="muted" id="order-sub">0 items</p>
+    </div>
+
+    <div class="card" id="order-items"></div>
+
+    <button class="btn-primary" id="btn-start-recording">🔴 Start packing video</button>
+    <button class="btn-ghost" id="btn-back-to-scan">Back</button>
+  </main>
+</div>
+
+<!-- SCREEN 3: RECORD PACKING VIDEO -->
+<div class="screen" id="screen-record">
+  <header>
+    <div class="logo"></div>
+    <strong>Video Pack</strong>
+    <span class="step-label">Step 3 of 3</span>
+  </header>
+  <div class="stepper">
+    <div class="dot done"></div><div class="dot done"></div><div class="dot done"></div>
+  </div>
+  <main>
+    <div class="card">
+      <p class="title">Record packing</p>
+      <p class="muted">Show the waybill, then pack every item on camera. Tap stop when done.</p>
+    </div>
+
+    <div class="camera-frame" id="record-frame">
+      <video id="record-video" muted playsInline autoplay></video>
+      <div class="rec-badge" id="rec-badge" style="display:none;">
+        <span class="rec-dot"></span> REC
+      </div>
+      <div class="timer" id="rec-timer" style="display:none;">00:00</div>
+    </div>
+
+    <button class="btn-primary" id="btn-toggle-record">🔴 Start recording</button>
+    <div id="record-error" class="error-text"></div>
+  </main>
+</div>
+
+<!-- SCREEN 4: REVIEW & SUBMIT -->
+<div class="screen" id="screen-review">
+  <header>
+    <div class="logo"></div>
+    <strong>Video Pack</strong>
+    <span class="step-label">Review</span>
+  </header>
+  <main>
+    <div class="card">
+      <p class="title">Review clip</p>
+      <p class="muted" id="review-sub">Waybill GATE001 · 0:00</p>
+    </div>
+
+    <video class="video-preview" id="review-video" controls playsInline></video>
+
+    <div id="submit-success" class="success-text"></div>
+
+    <div class="btn-row">
+      <button class="btn-ghost" id="btn-retake">Retake</button>
+      <button class="btn-primary" id="btn-submit">Submit &amp; finish</button>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/zxing/0.20.0/zxing-browser.min.js"></script>
+<script>
+(function () {
+  // ---- mock order data (stand-in for a real API lookup by waybill) ----
+  const ORDERS = {
+    GATE001: {
+      tracking: "GATE001",
+      items: [
+        { name: "Blue Jacket", sku: "SKU-1", qty: 2, image: "https://picsum.photos/seed/jacket/100" },
+        { name: "Running Shoes", sku: "SKU-7", qty: 1, image: "https://picsum.photos/seed/shoes/100" },
+      ],
+    },
+    GATE002: {
+      tracking: "GATE002",
+      items: [
+        { name: "Wireless Mouse", sku: "SKU-22", qty: 3, image: "https://picsum.photos/seed/mouse/100" },
+      ],
+    },
+  };
+
+  const screens = {
+    scan: document.getElementById("screen-scan"),
+    order: document.getElementById("screen-order"),
+    record: document.getElementById("screen-record"),
+    review: document.getElementById("screen-review"),
+  };
+
+  function showScreen(name) {
+    Object.values(screens).forEach((s) => s.classList.remove("active"));
+    screens[name].classList.add("active");
+  }
+
+  let currentOrder = null;
+  let scanStream = null;
+  let scanControls = null;
+  let recordStream = null;
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recordedBlobUrl = null;
+  let timerInterval = null;
+  let timerSeconds = 0;
+
+  // ---------------- SCREEN 1: barcode scan ----------------
+  async function startBarcodeScanner() {
+    try {
+      if (!window.ZXingBrowser) return;
+      const { BrowserMultiFormatReader } = window.ZXingBrowser;
+      const reader = new BrowserMultiFormatReader();
+      const videoEl = document.getElementById("scan-video");
+      scanControls = await reader.decodeFromVideoDevice(undefined, videoEl, (result) => {
+        if (result) {
+          document.getElementById("waybill-input").value = result.getText();
+          if (scanControls) scanControls.stop();
+        }
+      });
+    } catch (e) {
+      // Camera may be unavailable in this environment — manual entry still works.
+      document.getElementById("scan-error").textContent =
+        "Camera unavailable — you can still type the waybill number manually.";
+    }
+  }
+
+  document.getElementById("btn-load-order").addEventListener("click", () => {
+    const code = document.getElementById("waybill-input").value.trim().toUpperCase();
+    const errorEl = document.getElementById("scan-error");
+    if (!code) {
+      errorEl.textContent = "Enter or scan a waybill number.";
+      return;
+    }
+    const order = ORDERS[code];
+    if (!order) {
+      errorEl.textContent = `No order found for waybill "${code}".`;
+      return;
+    }
+    errorEl.textContent = "";
+    currentOrder = order;
+    renderOrder(order);
+    if (scanControls) scanControls.stop();
+    showScreen("order");
+  });
+
+  // ---------------- SCREEN 2: order details ----------------
+  function renderOrder(order) {
+    document.getElementById("order-title").textContent = `Waybill ${order.tracking}`;
+    document.getElementById("order-sub").textContent =
+      `${order.items.length} item${order.items.length === 1 ? "" : "s"} to pack`;
+
+    const container = document.getElementById("order-items");
+    container.innerHTML = "";
+    order.items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "item-row";
+      row.innerHTML = `
+        <img class="item-img" src="${item.image}" alt="${item.name}" />
+        <div class="item-info">
+          <p class="item-name">${item.name}</p>
+          <p class="item-sub">${item.sku} · Qty ${item.qty}</p>
+        </div>
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  document.getElementById("btn-back-to-scan").addEventListener("click", () => {
+    showScreen("scan");
+    startBarcodeScanner();
+  });
+
+  document.getElementById("btn-start-recording").addEventListener("click", async () => {
+    showScreen("record");
+    await startRecordCamera();
+  });
+
+  // ---------------- SCREEN 3: record packing video ----------------
+  async function startRecordCamera() {
+    const videoEl = document.getElementById("record-video");
+    const errorEl = document.getElementById("record-error");
+    errorEl.textContent = "";
+    try {
+      recordStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: true,
+      });
+      videoEl.srcObject = recordStream;
+    } catch (e) {
+      errorEl.textContent = "Couldn't access the camera. Check permissions and try again.";
+    }
+  }
+
+  function formatTime(totalSeconds) {
+    const m = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+    const s = String(totalSeconds % 60).padStart(2, "0");
+    return `${m}:${s}`;
+  }
+
+  document.getElementById("btn-toggle-record").addEventListener("click", () => {
+    const btn = document.getElementById("btn-toggle-record");
+    if (!mediaRecorder || mediaRecorder.state === "inactive") {
+      // start
+      if (!recordStream) return;
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(recordStream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: "video/webm" });
+        recordedBlobUrl = URL.createObjectURL(blob);
+        clearInterval(timerInterval);
+        goToReview();
+      };
+      mediaRecorder.start();
+
+      timerSeconds = 0;
+      document.getElementById("rec-badge").style.display = "flex";
+      document.getElementById("rec-timer").style.display = "block";
+      document.getElementById("rec-timer").textContent = formatTime(0);
+      timerInterval = setInterval(() => {
+        timerSeconds++;
+        document.getElementById("rec-timer").textContent = formatTime(timerSeconds);
+      }, 1000);
+
+      btn.textContent = "⏹ Stop recording";
+      btn.classList.remove("btn-primary");
+      btn.classList.add("btn-danger");
+    } else {
+      // stop
+      mediaRecorder.stop();
+      document.getElementById("rec-badge").style.display = "none";
+      document.getElementById("rec-timer").style.display = "none";
+      btn.textContent = "🔴 Start recording";
+      btn.classList.remove("btn-danger");
+      btn.classList.add("btn-primary");
+    }
+  });
+
+  function stopRecordCamera() {
+    if (recordStream) {
+      recordStream.getTracks().forEach((t) => t.stop());
+      recordStream = null;
+    }
+  }
+
+  // ---------------- SCREEN 4: review & submit ----------------
+  function goToReview() {
+    stopRecordCamera();
+    const reviewVideo = document.getElementById("review-video");
+    reviewVideo.src = recordedBlobUrl;
+    document.getElementById("review-sub").textContent =
+      `Waybill ${currentOrder.tracking} · ${formatTime(timerSeconds)} clip`;
+    document.getElementById("submit-success").textContent = "";
+    showScreen("review");
+  }
+
+  document.getElementById("btn-retake").addEventListener("click", async () => {
+    showScreen("record");
+    document.getElementById("btn-toggle-record").textContent = "🔴 Start recording";
+    document.getElementById("btn-toggle-record").classList.remove("btn-danger");
+    document.getElementById("btn-toggle-record").classList.add("btn-primary");
+    await startRecordCamera();
+  });
+
+  document.getElementById("btn-submit").addEventListener("click", () => {
+    // Prototype only: in the real app this uploads the blob to Supabase
+    // Storage and links it to the gate/order record.
+    document.getElementById("submit-success").textContent =
+      "Packing video saved. This waybill is now marked as packed.";
+    document.getElementById("btn-submit").disabled = true;
+  });
+
+  // kick off
+  startBarcodeScanner();
+})();
+</script>
+</body>
+</html>
