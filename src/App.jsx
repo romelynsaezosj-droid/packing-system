@@ -94,7 +94,12 @@ function useGatesAndLogs() {
   const gates = useMemo(() => {
     const map = {};
     for (const g of gateRows) {
-      map[g.tracking] = { tracking: g.tracking, closedAt: g.closed_at, items: [] };
+      map[g.tracking] = {
+        tracking: g.tracking,
+        closedAt: g.closed_at,
+        createdAt: g.created_at,
+        items: [],
+      };
     }
     for (const it of itemRows) {
       if (it.packed_at) continue;
@@ -123,6 +128,7 @@ function useGatesAndLogs() {
         item: it.name,
         sku: it.sku,
         user: it.packed_by,
+        packedAt: it.packed_at,
         time: new Date(it.packed_at).toLocaleString(),
       }));
   }, [itemRows]);
@@ -311,20 +317,40 @@ function Shell({ session, isAdmin, view, setView, onLogout, children }) {
 
 /* ---------------- DASHBOARD ---------------- */
 
+function isToday(dateString) {
+  if (!dateString) return false;
+  const d = new Date(dateString);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
 function Dashboard({ gates, logs, loading }) {
-  const gateList = Object.values(gates);
+  // Scoped to today only, so the dashboard resets each day instead of
+  // accumulating forever. A gate keeps its original creation date even
+  // if the same tracking number gets re-uploaded later (gates.tracking
+  // is unique — re-importing merges into the existing row rather than
+  // creating a new one), so re-uploading never inflates today's count.
+  const gateList = Object.values(gates).filter((g) => isToday(g.createdAt));
   const total = gateList.length;
   const completed = gateList.filter((g) => g.closedAt).length;
   const pending = total - completed;
+  const todaysLogs = logs.filter((l) => isToday(l.packedAt));
 
   return (
     <div>
       <p className="title">Dashboard</p>
+      <p className="muted" style={{ marginTop: -8, marginBottom: 14 }}>
+        Today's activity — resets each day
+      </p>
       <div className="stats-grid">
         <Stat label="Total gates" value={total} />
         <Stat label="Completed" value={completed} />
         <Stat label="Pending" value={pending} />
-        <Stat label="Log entries" value={logs.length} />
+        <Stat label="Log entries" value={todaysLogs.length} />
       </div>
 
       {loading && (
@@ -335,7 +361,7 @@ function Dashboard({ gates, logs, loading }) {
 
       {!loading && total === 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <p className="muted">No gates yet. Import data from Gate upload to get started.</p>
+          <p className="muted">No gates uploaded today yet.</p>
         </div>
       )}
     </div>
