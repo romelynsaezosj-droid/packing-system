@@ -699,15 +699,88 @@ function BarcodeScanner({ onDetected, onClose }) {
 
 /* ---------------- LOGS (admin only) ---------------- */
 
+function csvEscape(value) {
+  const s = String(value ?? "");
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function localDateKey(dateString) {
+  const d = new Date(dateString);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function Logs({ logs }) {
-  const ordered = useMemo(() => [...logs].reverse(), [logs]);
+  const [search, setSearch] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
+  const [scannerOpen, setScannerOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return [...logs]
+      .reverse()
+      .filter((l) => {
+        if (dateFilter && localDateKey(l.packedAt) !== dateFilter) return false;
+        if (q) {
+          const haystack = `${l.gate} ${l.item} ${l.sku} ${l.user}`.toLowerCase();
+          if (!haystack.includes(q)) return false;
+        }
+        return true;
+      });
+  }, [logs, search, dateFilter]);
+
+  function exportCsv() {
+    const header = ["Gate", "Item", "SKU", "User", "Time"];
+    const rows = filtered.map((l) => [l.gate, l.item, l.sku, l.user, l.time]);
+    const csv = [header, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `packing-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div>
       <p className="title">Packing logs</p>
-      {ordered.length === 0 && (
-        <div className="card"><p className="muted">No items confirmed yet.</p></div>
+
+      <div className="card" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          style={{ flex: "2 1 200px", margin: 0 }}
+          placeholder="Search gate, item, SKU, or user"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <button className="btn-ghost" onClick={() => setScannerOpen(true)}>📷 Scan</button>
+        <input
+          type="date"
+          style={{ flex: "1 1 150px", margin: 0 }}
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+        />
+        {dateFilter && (
+          <button className="btn-ghost" onClick={() => setDateFilter("")}>Clear date</button>
+        )}
+        <button className="btn-primary" onClick={exportCsv} disabled={filtered.length === 0}>
+          Export CSV
+        </button>
+      </div>
+
+      {scannerOpen && (
+        <BarcodeScanner
+          onDetected={(value) => {
+            setScannerOpen(false);
+            setSearch(value.trim());
+          }}
+          onClose={() => setScannerOpen(false)}
+        />
       )}
-      {ordered.map((l) => (
+
+      {filtered.length === 0 && (
+        <div className="card"><p className="muted">No matching log entries.</p></div>
+      )}
+      {filtered.map((l) => (
         <div key={l.id} className="card" style={{ display: "flex", justifyContent: "space-between" }}>
           <span>{l.gate} · {l.item} <span className="muted">({l.sku})</span></span>
           <span className="muted">{l.user} · {l.time}</span>
