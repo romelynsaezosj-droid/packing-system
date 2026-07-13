@@ -674,6 +674,30 @@ const SCAN_HINTS = new Map([
   [DecodeHintType.TRY_HARDER, true],
 ]);
 
+// Classic handheld-scanner beep, synthesized with the Web Audio API so
+// there's no audio file to load and it works offline inside the APK.
+// The context is created lazily on first use (after a user gesture, so
+// mobile autoplay rules allow it) and reused across scans.
+let beepCtx = null;
+function playScanBeep() {
+  try {
+    beepCtx = beepCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (beepCtx.state === "suspended") beepCtx.resume();
+    const osc = beepCtx.createOscillator();
+    const gain = beepCtx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 2400;
+    gain.gain.setValueAtTime(0.25, beepCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, beepCtx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(beepCtx.destination);
+    osc.start();
+    osc.stop(beepCtx.currentTime + 0.15);
+  } catch {
+    // no audio available — the vibration cue still fires
+  }
+}
+
 function BarcodeScanner({ onDetected, onClose }) {
   const videoRef = React.useRef(null);
   const [error, setError] = useState(null);
@@ -706,6 +730,7 @@ function BarcodeScanner({ onDetected, onClose }) {
             if (result && !detectedRef.current) {
               detectedRef.current = true; // decode callbacks can race the stop()
               controlsRef.current?.stop();
+              playScanBeep();
               if (navigator.vibrate) navigator.vibrate(100);
               onDetected(result.getText());
             }
