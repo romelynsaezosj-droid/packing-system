@@ -850,6 +850,7 @@ function Logs() {
     gate: it.gate_tracking,
     item: it.name,
     sku: it.sku,
+    qty: it.qty,
     user: it.packed_by,
     time: new Date(it.packed_at).toLocaleString(),
   }));
@@ -868,11 +869,12 @@ function Logs() {
         if (!data || data.length < PAGE) break;
       }
 
-      const header = ["Gate", "Item", "SKU", "User", "Time"];
+      const header = ["Gate", "Item", "SKU", "Qty", "User", "Time"];
       const csvRows = all.map((it) => [
         it.gate_tracking,
         it.name,
         it.sku,
+        it.qty,
         it.packed_by,
         new Date(it.packed_at).toLocaleString(),
       ]);
@@ -942,8 +944,11 @@ function Logs() {
         </div>
       )}
       {filtered.map((l) => (
-        <div key={l.id} className="card" style={{ display: "flex", justifyContent: "space-between" }}>
-          <span>{l.gate} · {l.item} <span className="muted">({l.sku})</span></span>
+        <div key={l.id} className="card" style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <span>
+            {l.gate} · {l.item} <span className="muted">({l.sku})</span>{" "}
+            <strong>× {l.qty}</strong>
+          </span>
           <span className="muted">{l.user} · {l.time}</span>
         </div>
       ))}
