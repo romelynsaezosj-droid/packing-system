@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
+import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import { supabase } from "./supabaseClient";
 
 // Persists a value to localStorage so it survives a page refresh. Only
@@ -651,31 +652,74 @@ function PackingMode({ currentUser }) {
 // barcode/QR code and feed the decoded text straight into tryLoadGate,
 // as if it were typed in.
 
+// Only the symbologies this warehouse actually sees: courier waybills
+// (J&T, SPX, etc.) are Code 128 / Code 39 / ITF, product barcodes are
+// EAN/UPC, plus QR for waybills that carry one. Narrowing the list
+// makes each frame decode faster and eliminates misreads from formats
+// we never use; TRY_HARDER makes ZXing work each frame more thoroughly
+// (blurry/low-light scans), which is the right trade for a warehouse.
+const SCAN_HINTS = new Map([
+  [
+    DecodeHintType.POSSIBLE_FORMATS,
+    [
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.ITF,
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.QR_CODE,
+    ],
+  ],
+  [DecodeHintType.TRY_HARDER, true],
+]);
+
 function BarcodeScanner({ onDetected, onClose }) {
   const videoRef = React.useRef(null);
   const [error, setError] = useState(null);
   const [ready, setReady] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchSupported, setTorchSupported] = useState(false);
   const controlsRef = React.useRef(null);
+  const detectedRef = React.useRef(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function start() {
       try {
-        const reader = new BrowserMultiFormatReader();
+        const reader = new BrowserMultiFormatReader(SCAN_HINTS);
 
-        const controls = await reader.decodeFromVideoDevice(
-          undefined, // let the browser pick the back/default camera
+        // Ask for the rear camera at high resolution — small/dense
+        // waybill barcodes need the pixels, and the front camera is
+        // never the right one on a warehouse floor.
+        const controls = await reader.decodeFromConstraints(
+          {
+            video: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+            },
+          },
           videoRef.current,
-          (result, err) => {
-            if (result) {
-              controls.stop();
+          (result) => {
+            if (result && !detectedRef.current) {
+              detectedRef.current = true; // decode callbacks can race the stop()
+              controlsRef.current?.stop();
+              if (navigator.vibrate) navigator.vibrate(100);
               onDetected(result.getText());
             }
           }
         );
         controlsRef.current = controls;
-        if (!cancelled) setReady(true);
+        if (cancelled) {
+          controls.stop();
+          return;
+        }
+        setReady(true);
+
+        const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
+        if (track?.getCapabilities?.().torch) setTorchSupported(true);
       } catch (e) {
         if (!cancelled) {
           setError(
@@ -695,11 +739,29 @@ function BarcodeScanner({ onDetected, onClose }) {
     };
   }, []);
 
+  async function toggleTorch() {
+    const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
+    if (!track) return;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
+      setTorchOn(!torchOn);
+    } catch {
+      setTorchSupported(false);
+    }
+  }
+
   return (
     <div className="card scanner-card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <p style={{ margin: 0, fontWeight: 600 }}>Scan waybill</p>
-        <button className="btn-ghost" onClick={onClose}>Close</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {torchSupported && (
+            <button className="btn-ghost" onClick={toggleTorch}>
+              {torchOn ? "🔦 Light off" : "🔦 Light on"}
+            </button>
+          )}
+          <button className="btn-ghost" onClick={onClose}>Close</button>
+        </div>
       </div>
 
       {error ? (
