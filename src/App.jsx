@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { BrowserMultiFormatReader } from "@zxing/browser";
 import { supabase } from "./supabaseClient";
 
 // Persists a value to localStorage so it survives a page refresh. Only
@@ -402,7 +403,7 @@ function GateUpload() {
     setSubmitting(false);
 
     if (error) {
-      setMessage({ type: "error", text: "Import failed — check your connection and try again." });
+      setMessage({ type: "error", text: `Import failed: ${error.message || "unknown error"}` });
       return;
     }
 
@@ -596,9 +597,9 @@ function PackingMode({ gates, currentUser, refreshData }) {
 }
 
 /* ---------------- CAMERA BARCODE SCANNER ---------------- */
-// Uses the device camera + the ZXing barcode-reading library (loaded
-// from a CDN) to scan a waybill barcode/QR code and feed the decoded
-// text straight into tryLoadGate, as if it were typed in.
+// Uses the device camera + the bundled ZXing library to scan a waybill
+// barcode/QR code and feed the decoded text straight into tryLoadGate,
+// as if it were typed in.
 
 function BarcodeScanner({ onDetected, onClose }) {
   const videoRef = React.useRef(null);
@@ -611,12 +612,6 @@ function BarcodeScanner({ onDetected, onClose }) {
 
     async function start() {
       try {
-        if (!window.ZXingBrowser) {
-          await loadZXingScript();
-        }
-        if (cancelled) return;
-
-        const { BrowserMultiFormatReader } = window.ZXingBrowser;
         const reader = new BrowserMultiFormatReader();
 
         const controls = await reader.decodeFromVideoDevice(
@@ -675,17 +670,6 @@ function BarcodeScanner({ onDetected, onClose }) {
     </div>
   );
 }
-
-function loadZXingScript() {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/zxing/0.20.0/zxing-browser.min.js";
-    script.onload = resolve;
-    script.onerror = () => reject(new Error("Failed to load barcode scanner library"));
-    document.body.appendChild(script);
-  });
-}
-
 
 /* ---------------- LOGS (admin only) ---------------- */
 
