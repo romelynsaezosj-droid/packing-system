@@ -550,7 +550,7 @@ function GateUpload() {
         totalSkipped ? ` Skipped ${totalSkipped} malformed row${totalSkipped === 1 ? "" : "s"}.` : ""
       }${
         alreadyExisted
-          ? ` ${alreadyExisted} row${alreadyExisted === 1 ? "" : "s"} matched an item already in the system and were left unchanged (not re-added or double-counted).`
+          ? ` ${alreadyExisted} row${alreadyExisted === 1 ? "" : "s"} matched an item already in the system and had their qty/details updated instead of being added as a duplicate.`
           : ""
       }`,
     });
