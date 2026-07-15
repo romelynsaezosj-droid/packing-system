@@ -158,12 +158,15 @@ create trigger items_sync_gate_closed_at
 --
 -- A row repeating within THIS SAME paste (a genuine multi-line order —
 -- the same SKU appearing twice in one order export) has its quantity
--- combined. A row matching an item already in the database from an
--- EARLIER call REPLACES that item's qty/name/image/barcode rather than
--- adding to it — so re-pasting identical data twice is a safe no-op,
--- and re-pasting corrected data actually applies the correction,
--- instead of either silently doubling the quantity or silently
--- ignoring the update (both of which real pastes have hit).
+-- combined. A row matching an UNPACKED item already in the database
+-- from an EARLIER call REPLACES that item's qty/name/image/barcode
+-- rather than adding to it — so re-pasting identical data twice is a
+-- safe no-op, and re-pasting corrected data actually applies the
+-- correction. A row matching an item that's already been PACKED is
+-- left alone entirely rather than inserted as a new unpacked copy —
+-- otherwise a daily export that re-lists an order's full history
+-- (not just what's new) would reopen already-completed gates and tank
+-- the Dashboard's "Completed" count.
 drop function if exists import_gate_rows(jsonb);
 
 create function import_gate_rows(p_rows jsonb)
@@ -180,6 +183,7 @@ declare
   v_imported int := 0;
   v_already int := 0;
   v_existing_id uuid;
+  v_existing_packed boolean;
   v_seen_id uuid;
 begin
   create temporary table if not exists _import_seen (
@@ -226,10 +230,25 @@ begin
       continue;
     end if;
 
-    select id into v_existing_id from items
+    -- Check ALL items for this sku on this gate, packed or not. If a
+    -- daily export re-lists an order's full history rather than only
+    -- what's new, a since-packed item would otherwise match nothing
+    -- here (the old query only looked at unpacked rows), fall through
+    -- to the insert below, and create a second, unpacked copy — which
+    -- reopens a gate that had already been completed and packed.
+    select id, (packed_at is not null) into v_existing_id, v_existing_packed
+      from items
       where gate_tracking = v_tracking and sku = v_sku
-        and packed_at is null
+      order by packed_at is null desc -- prefer the unpacked row if somehow both exist
       limit 1;
+
+    if v_existing_id is not null and v_existing_packed then
+      -- Already packed in an earlier session — a redundant echo of
+      -- finished work, not a new item. Leave the gate closed.
+      v_already := v_already + 1;
+      insert into _import_seen values (v_tracking, v_sku, v_existing_id);
+      continue;
+    end if;
 
     if v_existing_id is not null then
       update items set
