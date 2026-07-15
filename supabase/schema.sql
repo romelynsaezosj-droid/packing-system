@@ -194,10 +194,18 @@ begin
     v_sku := coalesce(v_row->>'sku', '');
     v_name := coalesce(v_row->>'name', '');
     v_qty := coalesce((v_row->>'qty')::int, 0);
-    v_image := coalesce(v_row->>'image', '');
+    v_image := trim(coalesce(v_row->>'image', ''));
     v_barcode := trim(coalesce(v_row->>'barcode', ''));
-    if lower(v_barcode) in ('n/a', 'na', '-', 'none', 'null') then
+    -- Excel's own #N/A error string (a failed VLOOKUP, most likely) is
+    -- the actual placeholder seen in real data, not literal "N/A" —
+    -- both are normalized to blank so an empty/error lookup on a later
+    -- paste can't stomp on a real value already stored (see the
+    -- coalesce(nullif(...)) merge logic below).
+    if lower(v_barcode) in ('n/a', '#n/a', 'na', '-', 'none', 'null') then
       v_barcode := '';
+    end if;
+    if lower(v_image) in ('n/a', '#n/a', 'na', '-', 'none', 'null') then
+      v_image := '';
     end if;
 
     insert into gates (tracking) values (v_tracking)
