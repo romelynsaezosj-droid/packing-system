@@ -178,7 +178,7 @@ begin
   create temporary table if not exists _import_seen (
     tracking text, sku text, barcode text, item_id uuid
   ) on commit drop;
-  delete from _import_seen;
+  delete from _import_seen where true; -- Supabase blocks bare DELETE with no WHERE
 
   for v_row in select * from jsonb_array_elements(p_rows) loop
     v_tracking := trim(coalesce(v_row->>'tracking', ''));
