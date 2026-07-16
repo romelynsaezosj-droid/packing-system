@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
-import { BarcodeFormat, DecodeHintType } from "@zxing/library";
+import { DecodeHintType } from "@zxing/library";
 import { supabase } from "./supabaseClient";
 
 // Persists a value to localStorage so it survives a page refresh. Only
@@ -784,27 +784,13 @@ function PackingMode({ currentUser }) {
 // barcode/QR code and feed the decoded text straight into tryLoadGate,
 // as if it were typed in.
 
-// Only the symbologies this warehouse actually sees: courier waybills
-// (J&T, SPX, etc.) are Code 128 / Code 39 / ITF, product barcodes are
-// EAN/UPC, plus QR for waybills that carry one. Narrowing the list
-// makes each frame decode faster and eliminates misreads from formats
-// we never use; TRY_HARDER makes ZXing work each frame more thoroughly
-// (blurry/low-light scans), which is the right trade for a warehouse.
-const SCAN_HINTS = new Map([
-  [
-    DecodeHintType.POSSIBLE_FORMATS,
-    [
-      BarcodeFormat.CODE_128,
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.ITF,
-      BarcodeFormat.EAN_13,
-      BarcodeFormat.EAN_8,
-      BarcodeFormat.UPC_A,
-      BarcodeFormat.QR_CODE,
-    ],
-  ],
-  [DecodeHintType.TRY_HARDER, true],
-]);
+// No format restriction — different couriers use different waybill
+// symbologies (Code 128/39, ITF, Codabar, PDF417, etc.) and product
+// barcodes add EAN/UPC/QR on top, so limiting the list caused some
+// real waybills to never even be attempted. TRY_HARDER makes ZXing
+// work each frame more thoroughly (blurry/low-light scans), which is
+// the right trade for a warehouse over raw decode speed.
+const SCAN_HINTS = new Map([[DecodeHintType.TRY_HARDER, true]]);
 
 // Classic handheld-scanner beep, synthesized with the Web Audio API so
 // there's no audio file to load and it works offline inside the APK.
@@ -908,32 +894,31 @@ function BarcodeScanner({ onDetected, onClose }) {
   }
 
   return (
-    <div className="card scanner-card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-        <p style={{ margin: 0, fontWeight: 600 }}>Scan waybill</p>
-        <div style={{ display: "flex", gap: 8 }}>
-          {torchSupported && (
-            <button className="btn-ghost" onClick={toggleTorch}>
-              {torchOn ? "🔦 Light off" : "🔦 Light on"}
-            </button>
-          )}
+    <div className="scanner-fullscreen">
+      {error ? (
+        <div className="scanner-fullscreen-error">
+          <p className="error-text">{error}</p>
           <button className="btn-ghost" onClick={onClose}>Close</button>
         </div>
-      </div>
-
-      {error ? (
-        <p className="error-text">{error}</p>
       ) : (
         <>
-          <div className="scanner-frame">
-            <video ref={videoRef} className="scanner-video" muted playsInline />
-            <div className="scanner-reticle">
-              <div className="scanner-line" />
+          <video ref={videoRef} className="scanner-fullscreen-video" muted playsInline />
+          <div className="scanner-fullscreen-reticle">
+            <div className="scanner-line" />
+          </div>
+          <div className="scanner-fullscreen-topbar">
+            <p className="scanner-fullscreen-title">
+              {ready ? "Point the camera at the barcode" : "Starting camera…"}
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              {torchSupported && (
+                <button className="btn-ghost" onClick={toggleTorch}>
+                  {torchOn ? "🔦 Off" : "🔦 Light"}
+                </button>
+              )}
+              <button className="btn-ghost" onClick={onClose}>Close</button>
             </div>
           </div>
-          <p className="muted" style={{ marginTop: 8 }}>
-            {ready ? "Point the camera at the waybill barcode." : "Starting camera…"}
-          </p>
         </>
       )}
     </div>
@@ -1463,39 +1448,67 @@ button {
 .success-text { color: #16a34a; font-size: 13px; margin: 8px 0 0; }
 .tag-admin { color: #2563eb; font-weight: 600; }
 .tag-packer { color: #d97706; font-weight: 600; }
-.scanner-card { display: flex; flex-direction: column; }
-.scanner-frame {
-  position: relative;
-  width: 100%;
-  max-width: 280px;
-  aspect-ratio: 5 / 2;
+.scanner-fullscreen {
+  position: fixed;
+  inset: 0;
   background: #000;
-  border-radius: 8px;
-  overflow: hidden;
-  margin: 10px auto 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.scanner-video {
+.scanner-fullscreen-video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-.scanner-reticle {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 88%;
-  height: 62%;
-  transform: translate(-50%, -50%);
-  border: 2px solid #2563eb;
-  border-radius: 6px;
-  box-shadow: 0 0 0 2000px rgba(0,0,0,0.25);
+.scanner-fullscreen-reticle {
+  position: relative;
+  width: 90%;
+  max-width: 640px;
   display: flex;
   align-items: center;
+}
+.scanner-fullscreen-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 14px 16px;
+  padding-top: max(14px, env(safe-area-inset-top));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.65), transparent);
+}
+.scanner-fullscreen-title {
+  margin: 0;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+.scanner-fullscreen-topbar .btn-ghost {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.4);
+  color: #fff;
+}
+.scanner-fullscreen-topbar .btn-ghost:hover { background: rgba(255,255,255,0.22); }
+.scanner-fullscreen-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 20px;
+  text-align: center;
 }
 .scanner-line {
   width: 100%;
   height: 2px;
   background: #ef4444;
-  box-shadow: 0 0 4px rgba(239, 68, 68, 0.9);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.9);
 }
 `;
