@@ -818,51 +818,111 @@ function playScanBeep() {
 
 function BarcodeScanner({ onDetected, onClose }) {
   const videoRef = React.useRef(null);
+  const streamRef = React.useRef(null);
+  const zxingControlsRef = React.useRef(null);
+  const detectLoopRef = React.useRef(null);
+  const detectedRef = React.useRef(false);
   const [error, setError] = useState(null);
   const [ready, setReady] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
-  const controlsRef = React.useRef(null);
-  const detectedRef = React.useRef(false);
+  const [zoomCaps, setZoomCaps] = useState(null); // { min, max, step }
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
 
+    function handleDetect(text) {
+      if (detectedRef.current) return;
+      detectedRef.current = true;
+      playScanBeep();
+      if (navigator.vibrate) navigator.vibrate(100);
+      onDetected(text);
+    }
+
     async function start() {
       try {
-        const reader = new BrowserMultiFormatReader(SCAN_HINTS);
-
-        // Ask for the rear camera at high resolution — small/dense
-        // waybill barcodes need the pixels, and the front camera is
-        // never the right one on a warehouse floor.
-        const controls = await reader.decodeFromConstraints(
-          {
-            video: {
-              facingMode: { ideal: "environment" },
-              width: { ideal: 1920 },
-              height: { ideal: 1080 },
-            },
+        // Own the camera stream ourselves (rather than letting ZXing
+        // open it) so torch/zoom/focus controls and both decoder
+        // engines all work off the same stream.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
           },
-          videoRef.current,
-          (result) => {
-            if (result && !detectedRef.current) {
-              detectedRef.current = true; // decode callbacks can race the stop()
-              controlsRef.current?.stop();
-              playScanBeep();
-              if (navigator.vibrate) navigator.vibrate(100);
-              onDetected(result.getText());
-            }
-          }
-        );
-        controlsRef.current = controls;
+        });
         if (cancelled) {
-          controls.stop();
+          stream.getTracks().forEach((t) => t.stop());
           return;
         }
-        setReady(true);
+        streamRef.current = stream;
+        const video = videoRef.current;
+        video.srcObject = stream;
+        await video.play().catch(() => {});
 
-        const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
-        if (track?.getCapabilities?.().torch) setTorchSupported(true);
+        const track = stream.getVideoTracks()[0];
+        const caps = track.getCapabilities?.() || {};
+        if (caps.torch) setTorchSupported(true);
+        if (caps.focusMode?.includes?.("continuous")) {
+          track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+        }
+        if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+          setZoomCaps({
+            min: caps.zoom.min,
+            max: Math.min(caps.zoom.max, 5),
+            step: caps.zoom.step || 0.1,
+          });
+          const current = track.getSettings?.().zoom;
+          if (current) setZoom(current);
+        }
+
+        // Prefer the platform's native BarcodeDetector (Google's ML Kit
+        // engine inside Android WebView/Chrome) — far better than a JS
+        // decoder at angled, glossy, or dense 1D barcodes like courier
+        // thermal labels. Fall back to bundled ZXing where the API
+        // doesn't exist (iOS Safari, older browsers).
+        let usingNative = false;
+        if ("BarcodeDetector" in window) {
+          try {
+            const formats = await window.BarcodeDetector.getSupportedFormats();
+            if (formats?.length) {
+              const detector = new window.BarcodeDetector({ formats });
+              usingNative = true;
+              let busy = false;
+              detectLoopRef.current = setInterval(async () => {
+                if (busy || detectedRef.current || video.readyState < 2) return;
+                busy = true;
+                try {
+                  const codes = await detector.detect(video);
+                  if (codes.length && codes[0].rawValue) {
+                    clearInterval(detectLoopRef.current);
+                    handleDetect(codes[0].rawValue);
+                  }
+                } catch {
+                  // a single failed frame is fine — keep looping
+                }
+                busy = false;
+              }, 100);
+            }
+          } catch {
+            usingNative = false;
+          }
+        }
+
+        if (!usingNative) {
+          const reader = new BrowserMultiFormatReader(SCAN_HINTS);
+          const controls = await reader.decodeFromStream(stream, video, (result) => {
+            if (result) {
+              zxingControlsRef.current?.stop();
+              handleDetect(result.getText());
+            }
+          });
+          zxingControlsRef.current = controls;
+          if (cancelled) controls.stop();
+        }
+
+        if (!cancelled) setReady(true);
       } catch (e) {
         if (!cancelled) {
           setError(
@@ -878,18 +938,31 @@ function BarcodeScanner({ onDetected, onClose }) {
 
     return () => {
       cancelled = true;
-      if (controlsRef.current) controlsRef.current.stop();
+      if (detectLoopRef.current) clearInterval(detectLoopRef.current);
+      if (zxingControlsRef.current) zxingControlsRef.current.stop();
+      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
   async function toggleTorch() {
-    const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
+    const track = streamRef.current?.getVideoTracks?.()[0];
     if (!track) return;
     try {
       await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
       setTorchOn(!torchOn);
     } catch {
       setTorchSupported(false);
+    }
+  }
+
+  async function applyZoom(value) {
+    setZoom(value);
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    if (!track) return;
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: value }] });
+    } catch {
+      setZoomCaps(null);
     }
   }
 
@@ -919,6 +992,20 @@ function BarcodeScanner({ onDetected, onClose }) {
               <button className="btn-ghost" onClick={onClose}>Close</button>
             </div>
           </div>
+          {zoomCaps && (
+            <div className="scanner-zoom">
+              <span className="scanner-zoom-label">1x</span>
+              <input
+                type="range"
+                min={zoomCaps.min}
+                max={zoomCaps.max}
+                step={zoomCaps.step}
+                value={zoom}
+                onChange={(e) => applyZoom(Number(e.target.value))}
+              />
+              <span className="scanner-zoom-label">{zoomCaps.max}x</span>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -1510,5 +1597,32 @@ button {
   height: 2px;
   background: #ef4444;
   box-shadow: 0 0 6px rgba(239, 68, 68, 0.9);
+}
+.scanner-zoom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px 24px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(to top, rgba(0,0,0,0.65), transparent);
+}
+.scanner-zoom input[type="range"] {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  accent-color: #2563eb;
+  min-height: 32px;
+}
+.scanner-zoom-label {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
 `;
